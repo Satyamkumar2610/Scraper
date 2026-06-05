@@ -1,0 +1,20 @@
+# Environment
+.env
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Logs & data
+logs/
+raw/
+exports/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Gemini
+.gemini/

@@ -1,0 +1,48 @@
+version: "3.9"
+
+services:
+  # ── PostgreSQL ────────────────────────────────────────────────
+  postgres:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-agri_db}
+      POSTGRES_USER: ${POSTGRES_USER:-agri_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agri_password}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-agri_user}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ── Scraper / Ingestion Service ───────────────────────────────
+  scraper:
+    build: .
+    restart: "no"
+    environment:
+      API_KEY: ${API_KEY}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-agri_db}
+      POSTGRES_USER: ${POSTGRES_USER:-agri_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agri_password}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      DEFAULT_PAGE_SIZE: ${DEFAULT_PAGE_SIZE:-100}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./raw:/app/raw
+      - ./exports:/app/exports
+      - ./logs:/app/logs
+    # Override CMD at runtime:
+    #   docker compose run scraper scrape --limit 500
+    entrypoint: ["python", "main.py"]
+    command: ["--help"]
+
+volumes:
+  pgdata:

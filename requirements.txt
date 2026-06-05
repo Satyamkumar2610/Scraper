@@ -1,0 +1,15 @@
+# Core
+requests==2.31.0
+SQLAlchemy==2.0.28
+psycopg2-binary==2.9.9
+pydantic==2.6.4
+pydantic-settings==2.2.1
+pandas==2.2.1
+tenacity==8.2.3
+python-dotenv==1.0.1
+alembic==1.13.1
+
+# Export formats
+pyarrow==15.0.2
+
+# Hashing (stdlib hashlib is used, no extra dep needed)
