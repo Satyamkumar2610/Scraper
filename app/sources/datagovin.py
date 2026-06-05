@@ -66,7 +66,9 @@ class DataGovInSource(BaseDataSource):
     )
     def _request(self, params: dict[str, Any]) -> dict[str, Any]:
         """Execute a GET request with retry + exponential back-off."""
-        response = requests.get(self.base_url, params=params, timeout=60)
+        # Data.gov.in can be very slow (45-90s per response).
+        # Use separate connect (10s) and read (180s) timeouts.
+        response = requests.get(self.base_url, params=params, timeout=(10, 180))
 
         if response.status_code in self.RETRYABLE_CODES:
             logger.warning(
