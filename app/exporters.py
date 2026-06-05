@@ -1,5 +1,5 @@
 """
-exporters.py — Export silver-layer data to CSV, Parquet, Arrow, and JSON.
+exporters.py — Export dynamic raw data to CSV, Parquet, Arrow, and JSON.
 
 All exports write to ``exports/`` with timestamped filenames.
 Supports optional SQL-level filtering and incremental extraction
@@ -17,7 +17,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.database import engine, get_db
+from app.database import engine
 from app.logger import logger
 
 
@@ -31,12 +31,10 @@ def _build_query(
         clauses.append(f"ingested_at >= '{since.isoformat()}'")
     if where:
         for col, val in where.items():
-            # Basic sanitisation — production systems should use
-            # parameterised queries via SQLAlchemy Core.
             safe_val = str(val).replace("'", "''")
             clauses.append(f"{col} = '{safe_val}'")
 
-    sql = "SELECT * FROM crop_statistics_standardized"
+    sql = "SELECT * FROM crop_statistics_raw"
     if clauses:
         sql += " WHERE " + " AND ".join(clauses)
     return sql
@@ -49,7 +47,7 @@ def _ensure_export_dir() -> str:
 
 def _timestamped_name(extension: str) -> str:
     ts = datetime.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    return f"crop_statistics_{ts}.{extension}"
+    return f"crop_statistics_raw_{ts}.{extension}"
 
 
 # ─── Public export functions ─────────────────────────────────────────

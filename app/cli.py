@@ -8,11 +8,10 @@ Commands
   scrape          Full-refresh scrape.
   resume          Resume from last incomplete run.
   status          Show job-queue statistics.
-  validate        Run data-quality checks on silver layer.
-  export-csv      Export silver data to CSV.
-  export-parquet  Export silver data to Parquet.
-  export-arrow    Export silver data to Arrow IPC.
-  export-json     Export silver data to JSONL.
+  export-csv      Export raw data to CSV.
+  export-parquet  Export raw data to Parquet.
+  export-arrow    Export raw data to Arrow IPC.
+  export-json     Export raw data to JSONL.
 """
 
 from __future__ import annotations
@@ -31,7 +30,6 @@ from app.scheduler import (
     start_scrape,
 )
 from app.sources.datagovin import DataGovInSource
-from app.validation import run_validation
 
 
 def _make_source() -> DataGovInSource:
@@ -73,12 +71,6 @@ def cmd_status(_args: argparse.Namespace) -> None:
     for k, v in stats.items():
         print(f"  {k.replace('_', ' ').title():25s} {v}")
     print()
-
-
-def cmd_validate(_args: argparse.Namespace) -> None:
-    with get_db() as db:
-        n = run_validation(db)
-    print(f"✓ Validation complete — {n} issues found.")
 
 
 def cmd_export_csv(_args: argparse.Namespace) -> None:
@@ -132,14 +124,11 @@ def build_parser() -> argparse.ArgumentParser:
     # status
     sub.add_parser("status", help="Show job-queue statistics")
 
-    # validate
-    sub.add_parser("validate", help="Run data-quality checks on silver layer")
-
     # exports
-    sub.add_parser("export-csv", help="Export silver data to CSV")
-    sub.add_parser("export-parquet", help="Export silver data to Parquet")
-    sub.add_parser("export-arrow", help="Export silver data to Arrow IPC")
-    sub.add_parser("export-json", help="Export silver data to JSONL")
+    sub.add_parser("export-csv", help="Export raw data to CSV")
+    sub.add_parser("export-parquet", help="Export raw data to Parquet")
+    sub.add_parser("export-arrow", help="Export raw data to Arrow IPC")
+    sub.add_parser("export-json", help="Export raw data to JSONL")
 
     return parser
 
@@ -150,7 +139,6 @@ COMMAND_MAP = {
     "scrape": cmd_scrape,
     "resume": cmd_resume,
     "status": cmd_status,
-    "validate": cmd_validate,
     "export-csv": cmd_export_csv,
     "export-parquet": cmd_export_parquet,
     "export-arrow": cmd_export_arrow,

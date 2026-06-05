@@ -6,10 +6,9 @@ Tables
 Metadata layer    : metadata_datasets, metadata_fields, metadata_api_runs
 Job queue         : scrape_jobs
 Raw storage       : raw_responses
-Bronze layer      : crop_statistics_raw
-Silver layer      : crop_statistics_standardized
 Data quality      : validation_runs, data_quality_issues
 Observability     : ingestion_metrics
+Dynamic Raw Data  : crop_statistics_raw
 """
 
 from __future__ import annotations
@@ -27,10 +26,13 @@ from sqlalchemy import (
     Text,
     JSON,
     UniqueConstraint,
+    Table,
+    MetaData,
+    inspect
 )
 from sqlalchemy.sql import func
 
-from app.database import Base
+from app.database import Base, engine
 
 
 # ─── Enums ──────────────────────────────────────────────────────────────────
@@ -122,53 +124,6 @@ class RawResponse(Base):
     created_at = Column(DateTime, server_default=func.now())
 
 
-# ─── Bronze layer (raw records, one row per source record) ──────────────────
-
-class CropStatisticRaw(Base):
-    """
-    Bronze table — preserves every field exactly as the API returned it.
-    Columns are intentionally TEXT so no data is lost to type coercion.
-    New fields detected during schema evolution are added as nullable columns.
-    """
-    __tablename__ = "crop_statistics_raw"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    source_record_hash = Column(String(64), unique=True, nullable=False, index=True)
-    raw_json = Column(JSON, nullable=False)
-    source_dataset = Column(String(256), nullable=True)
-    source_resource_id = Column(String(256), nullable=True)
-    source_system = Column(String(128), nullable=True)
-    ingested_at = Column(DateTime, server_default=func.now())
-
-
-# ─── Silver layer (standardised, analytics-ready) ──────────────────────────
-
-class CropStatisticStandardized(Base):
-    """
-    Silver table — cleaned, typed, and standardised for analytics.
-    Fields are mapped from the bronze layer and normalised.
-    """
-    __tablename__ = "crop_statistics_standardized"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    state_name = Column(String(256), nullable=True, index=True)
-    district_name = Column(String(256), nullable=True, index=True)
-    crop_name = Column(String(256), nullable=True, index=True)
-    season = Column(String(128), nullable=True)
-    year = Column(String(64), nullable=True, index=True)
-    area_hectare = Column(Float, nullable=True)
-    production_tonnes = Column(Float, nullable=True)
-    yield_ton_per_hectare = Column(Float, nullable=True)
-
-    # Lineage columns
-    source_dataset = Column(String(256), nullable=True)
-    source_resource_id = Column(String(256), nullable=True)
-    source_record_hash = Column(String(64), unique=True, nullable=False, index=True)
-    source_system = Column(String(128), nullable=True)
-    ingested_at = Column(DateTime, server_default=func.now())
-    api_response_timestamp = Column(DateTime, nullable=True)
-
-
 # ─── Data quality layer ─────────────────────────────────────────────────────
 
 class ValidationRun(Base):
@@ -210,3 +165,35 @@ class IngestionMetric(Base):
     duration_seconds = Column(Float, default=0.0)
     throughput_per_second = Column(Float, default=0.0)
     created_at = Column(DateTime, server_default=func.now())
+
+# ─── Dynamic Raw Table ─────────────────────────────────────────────────────
+
+def get_dynamic_raw_table(fields: set[str], table_name: str = "crop_statistics_raw") -> Table:
+    """
+    Dynamically generates or reflects the crop_statistics_raw table.
+    We create individual TEXT columns for every field discovered from the API.
+    """
+    metadata = Base.metadata
+    
+    if table_name in metadata.tables:
+        table = metadata.tables[table_name]
+        return table
+        
+    inspector = inspect(engine)
+    if inspector.has_table(table_name):
+        return Table(table_name, metadata, autoload_with=engine)
+        
+    columns = [
+        Column('id', Integer, primary_key=True, autoincrement=True),
+        Column('source_record_hash', String(64), unique=True, nullable=False, index=True),
+        Column('source_dataset', String(256), nullable=True),
+        Column('source_resource_id', String(256), nullable=True),
+        Column('source_system', String(128), nullable=True),
+        Column('ingested_at', DateTime, server_default=func.now())
+    ]
+    
+    for field_id in sorted(fields):
+        columns.append(Column(field_id, Text, nullable=True))
+            
+    table = Table(table_name, metadata, *columns)
+    return table

@@ -19,15 +19,14 @@ from typing import Any
 
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 
 from app.config import settings
-from app.database import get_db, init_db
+from app.database import get_db, init_db, engine
 from app.lineage import compute_record_hash
 from app.logger import logger
 from app.metrics import RunAccumulator, save_metrics
 from app.models import (
-    CropStatisticRaw,
-    CropStatisticStandardized,
     JobStatus,
     MetadataApiRun,
     MetadataDataset,
@@ -35,8 +34,9 @@ from app.models import (
     RawResponse,
     RunStatus,
     ScrapeJob,
+    get_dynamic_raw_table
 )
-from app.parser import detect_new_fields, map_to_silver
+from app.parser import detect_new_fields
 from app.sources.base import BaseDataSource, DiscoveryResult
 
 
@@ -87,6 +87,11 @@ def perform_discovery(source: BaseDataSource) -> DiscoveryResult:
                 ))
         db.commit()
 
+    # Generate dynamic table explicitly using discovered fields
+    fields_set = {f.get("id", f.get("name", "")) for f in result.fields if f.get("id") or f.get("name")}
+    table = get_dynamic_raw_table(fields_set)
+    table.create(engine, checkfirst=True)
+
     logger.info(
         "Discovery complete — %d fields, %d total records",
         len(result.fields),
@@ -132,7 +137,7 @@ def _run_single_job(
     acc: RunAccumulator,
     known_fields: set[str],
 ) -> None:
-    """Execute one job: fetch → raw → bronze → silver → mark complete."""
+    """Execute one job: fetch → raw → dynamic raw fields → mark complete."""
 
     job.status = JobStatus.running
     job.started_at = datetime.datetime.utcnow()
@@ -179,52 +184,45 @@ def _run_single_job(
                         field_name=nf,
                         field_type="unknown",
                     ))
+                # Alter table to add new field safely
+                try:
+                    db.execute(text(f"ALTER TABLE crop_statistics_raw ADD COLUMN {nf} TEXT"))
+                except Exception as e:
+                    db.rollback()
+                    logger.warning(f"Failed to add column {nf}, it might already exist: {e}")
 
-        # ── Bronze + Silver ─────────────────────────────────────────
+        # ── Dynamic Raw Upsert ─────────────────────────────────────────
         inserted = 0
+        table = get_dynamic_raw_table(known_fields)
+        
         for rec in page.records:
             rec_hash = compute_record_hash(rec)
+            
+            # Map values exactly as strings (pure raw extraction)
+            row_data = {
+                "source_record_hash": rec_hash,
+                "source_dataset": discovery.dataset_name,
+                "source_resource_id": discovery.resource_id,
+                "source_system": discovery.source_name,
+            }
+            for k, v in rec.items():
+                if k in known_fields:
+                    row_data[k] = str(v) if v is not None else None
 
             # Bronze upsert (ON CONFLICT DO UPDATE)
-            bronze_stmt = pg_insert(CropStatisticRaw).values(
-                source_record_hash=rec_hash,
-                raw_json=rec,
-                source_dataset=discovery.dataset_name,
-                source_resource_id=discovery.resource_id,
-                source_system=discovery.source_name,
-            )
+            bronze_stmt = pg_insert(table).values(**row_data)
+            
+            # Set up update dict for on_conflict
+            set_dict = {"ingested_at": datetime.datetime.utcnow()}
+            for k in rec.keys():
+                if k in known_fields:
+                    set_dict[k] = getattr(bronze_stmt.excluded, k)
+                    
             bronze_stmt = bronze_stmt.on_conflict_do_update(
                 index_elements=["source_record_hash"],
-                set_={
-                    "raw_json": bronze_stmt.excluded.raw_json,
-                    "ingested_at": datetime.datetime.utcnow(),
-                },
+                set_=set_dict,
             )
             db.execute(bronze_stmt)
-
-            # Silver upsert
-            silver = map_to_silver(rec)
-            silver["source_dataset"] = discovery.dataset_name
-            silver["source_resource_id"] = discovery.resource_id
-            silver["source_record_hash"] = rec_hash
-            silver["source_system"] = discovery.source_name
-
-            silver_stmt = pg_insert(CropStatisticStandardized).values(**silver)
-            silver_stmt = silver_stmt.on_conflict_do_update(
-                index_elements=["source_record_hash"],
-                set_={
-                    "state_name": silver_stmt.excluded.state_name,
-                    "district_name": silver_stmt.excluded.district_name,
-                    "crop_name": silver_stmt.excluded.crop_name,
-                    "season": silver_stmt.excluded.season,
-                    "year": silver_stmt.excluded.year,
-                    "area_hectare": silver_stmt.excluded.area_hectare,
-                    "production_tonnes": silver_stmt.excluded.production_tonnes,
-                    "yield_ton_per_hectare": silver_stmt.excluded.yield_ton_per_hectare,
-                    "ingested_at": datetime.datetime.utcnow(),
-                },
-            )
-            db.execute(silver_stmt)
             inserted += 1
 
         acc.tick_inserted(inserted)
@@ -264,7 +262,7 @@ def start_scrape(
     discovery = perform_discovery(source)
     total = discovery.total_records
     run_id = uuid.uuid4().hex[:16]
-    known_fields = {f.get("id", "") for f in discovery.fields}
+    known_fields = {f.get("id", "") for f in discovery.fields if f.get("id")}
 
     logger.info(
         "Starting scrape run %s — %d records, page size %d",
@@ -334,7 +332,7 @@ def resume_scrape(
     limit = limit or settings.DEFAULT_PAGE_SIZE
     discovery = perform_discovery(source)
     total = discovery.total_records
-    known_fields = {f.get("id", "") for f in discovery.fields}
+    known_fields = {f.get("id", "") for f in discovery.fields if f.get("id")}
 
     # Try to find the most recent incomplete run
     with get_db() as db:
