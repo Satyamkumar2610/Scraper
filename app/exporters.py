@@ -114,3 +114,19 @@ def export_json(
 
     logger.info("Exported %d rows to %s", len(df), path)
     return path
+
+
+def export_xlsx(
+    since: datetime.datetime | None = None,
+    where: dict[str, Any] | None = None,
+) -> str:
+    """Export to XLSX format. Returns the output file path."""
+    out_dir = _ensure_export_dir()
+    path = os.path.join(out_dir, _timestamped_name("xlsx"))
+
+    sql = _build_query(since, where)
+    df = pd.read_sql(text(sql), con=engine)
+    df.to_excel(path, index=False, engine="openpyxl")
+
+    logger.info("Exported %d rows to %s", len(df), path)
+    return path

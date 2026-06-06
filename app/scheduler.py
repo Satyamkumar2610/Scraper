@@ -74,17 +74,14 @@ def perform_discovery(source: BaseDataSource) -> DiscoveryResult:
         for f in result.fields:
             fname = f.get("id", f.get("name", ""))
             ftype = f.get("type", "unknown")
-            exists = (
-                db.query(MetadataField)
-                .filter_by(dataset_id=result.resource_id, field_name=fname)
-                .first()
+            db.execute(
+                text(
+                    "INSERT INTO metadata_fields (dataset_id, field_name, field_type) "
+                    "VALUES (:did, :fname, :ftype) "
+                    "ON CONFLICT (dataset_id, field_name) DO NOTHING"
+                ),
+                {"did": result.resource_id, "fname": fname, "ftype": ftype}
             )
-            if not exists:
-                db.add(MetadataField(
-                    dataset_id=result.resource_id,
-                    field_name=fname,
-                    field_type=ftype,
-                ))
         db.commit()
 
     # Generate dynamic table explicitly using discovered fields
@@ -168,28 +165,38 @@ def _run_single_job(
         # ── Schema evolution check ──────────────────────────────────
         new_fields = detect_new_fields(known_fields, page.records)
         if new_fields:
+            table_name = "crop_statistics_raw"
             for nf in new_fields:
                 known_fields.add(nf)
-                exists = (
-                    db.query(MetadataField)
-                    .filter_by(
-                        dataset_id=discovery.resource_id,
-                        field_name=nf,
-                    )
-                    .first()
+                db.execute(
+                    text(
+                        "INSERT INTO metadata_fields (dataset_id, field_name, field_type) "
+                        "VALUES (:did, :fname, 'unknown') "
+                        "ON CONFLICT (dataset_id, field_name) DO NOTHING"
+                    ),
+                    {"did": discovery.resource_id, "fname": nf}
                 )
-                if not exists:
-                    db.add(MetadataField(
-                        dataset_id=discovery.resource_id,
-                        field_name=nf,
-                        field_type="unknown",
-                    ))
                 # Alter table to add new field safely
-                try:
-                    db.execute(text(f"ALTER TABLE crop_statistics_raw ADD COLUMN {nf} TEXT"))
-                except Exception as e:
-                    db.rollback()
-                    logger.warning(f"Failed to add column {nf}, it might already exist: {e}")
+                from sqlalchemy import Column, Text, inspect
+                from app.database import Base, engine
+                inspector = inspect(engine)
+                existing_cols = [c['name'] for c in inspector.get_columns(table_name)]
+                if nf not in existing_cols:
+                    try:
+                        db.execute(text(f'ALTER TABLE {table_name} ADD COLUMN "{nf}" TEXT'))
+                        db.commit()
+                        logger.info("Added new field to raw table: %s", nf)
+                    except Exception as e:
+                        db.rollback()
+                        logger.warning("Failed to add column %s, it might already exist: %s", nf, e)
+                if table_name in Base.metadata.tables:
+                    t = Base.metadata.tables[table_name]
+                    if not hasattr(t.c, nf):
+                        t.append_column(Column(nf, Text))
+            # Force SQLAlchemy to fully reload the table schema to avoid AttributeError on excluded
+            if table_name in Base.metadata.tables:
+                Base.metadata.remove(Base.metadata.tables[table_name])
+
 
         # ── Dynamic Raw Upsert ─────────────────────────────────────────
         inserted = 0
@@ -282,8 +289,9 @@ def start_scrape(
         ))
         db.commit()
 
+        # 1. Queue all jobs first
+        jobs_to_run = []
         for offset in range(0, total, limit):
-            # Skip already-completed jobs (idempotent)
             existing = (
                 db.query(ScrapeJob)
                 .filter_by(run_id=run_id, offset_value=offset)
@@ -301,9 +309,14 @@ def start_scrape(
                 db.add(job)
                 db.commit()
                 db.refresh(job)
+                jobs_to_run.append(job)
             else:
-                job = existing
+                jobs_to_run.append(existing)
 
+        logger.info("Queued %d jobs to run.", len(jobs_to_run))
+
+        # 2. Execute the jobs
+        for job in jobs_to_run:
             _run_single_job(db, job, source, limit, discovery, acc, known_fields)
 
         # Finalise run

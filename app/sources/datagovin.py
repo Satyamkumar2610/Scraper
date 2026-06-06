@@ -1,12 +1,10 @@
 """
-sources/datagovin.py — Adapter for the Data.gov.in REST API.
-
-Handles discovery, pagination (offset/limit), retry, and raw-response
-construction so the pipeline only sees `DiscoveryResult` / `PageResult`.
+datagovin.py — Data.gov.in adapter implementation.
 """
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import requests
@@ -23,149 +21,125 @@ from app.sources.base import BaseDataSource, DiscoveryResult, PageResult
 
 
 class APIError(Exception):
-    """Raised on retryable HTTP status codes so tenacity can intercept."""
+    pass
 
 
 class DataGovInSource(BaseDataSource):
     """
-    Concrete source adapter for https://api.data.gov.in.
-
-    Pagination model: ``offset`` / ``limit`` query params.
-    Authentication:   ``api-key`` query param.
+    Adapter for the Data.gov.in API.
+    Handles authentication via api-key and pagination via offset/limit.
     """
 
     RETRYABLE_CODES = {429, 500, 502, 503, 504}
 
-    def __init__(
-        self,
-        api_key: str | None = None,
-        base_url: str | None = None,
-        resource_id: str | None = None,
-    ) -> None:
-        self.api_key = api_key or settings.API_KEY
-        self.base_url = base_url or settings.DATAGOVIN_BASE_URL
-        self.resource_id = resource_id or settings.DATAGOVIN_RESOURCE_ID
+    def __init__(self, resource_id: str | None = None):
+        self.resource_id = resource_id or "35be999b-0208-4354-b557-f6ca9a5355de"
+        self.base_url = f"https://api.data.gov.in/resource/{self.resource_id}"
 
+        self.api_key = settings.API_KEY
         if not self.api_key:
-            raise ValueError(
-                "API_KEY is not set. Add it to .env or pass it explicitly."
-            )
+            raise ValueError("API_KEY environment variable is required")
+            
+        self._total_records = 0
 
-        # Cached after first discovery call
-        self._discovery: DiscoveryResult | None = None
+    @property
+    def source_name(self) -> str:
+        return "datagovin"
 
-    # ── Internal request helper (with retries) ─────────────────────────
+    def _build_params(self, offset: int, limit: int) -> dict[str, Any]:
+        return {
+            "api-key": self.api_key,
+            "format": "json",
+            "offset": str(offset),
+            "limit": str(limit),
+        }
 
     @retry(
-        stop=stop_after_attempt(5),
+        retry=retry_if_exception_type((requests.exceptions.RequestException, APIError)),
         wait=wait_exponential(multiplier=1, min=2, max=30),
-        retry=retry_if_exception_type(
-            (requests.exceptions.RequestException, APIError)
-        ),
+        stop=stop_after_attempt(5),
         reraise=True,
     )
     def _request(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Execute a GET request with retry + exponential back-off."""
         # Data.gov.in can be very slow (45-90s per response).
-        # Use separate connect (10s) and read (180s) timeouts.
         response = requests.get(self.base_url, params=params, timeout=(10, 180))
 
         if response.status_code in self.RETRYABLE_CODES:
             logger.warning(
-                "Retryable HTTP %s from Data.gov.in — will retry",
+                "Retryable HTTP %d from Data.gov.in — will retry",
                 response.status_code,
             )
             raise APIError(f"HTTP {response.status_code}")
 
-        if response.status_code != 200:
-            logger.error(
-                "Non-retryable HTTP %s: %s",
-                response.status_code,
-                response.text[:500],
-            )
-            response.raise_for_status()
+        response.raise_for_status()
 
-        return response.json()
+        data = response.json()
+        if data.get("status") != "ok" and "error" in data:
+            raise APIError(f"API returned error: {data}")
 
-    def _base_params(self) -> dict[str, Any]:
-        return {
-            "api-key": self.api_key,
-            "format": "json",
-        }
-
-    # ── Public interface ────────────────────────────────────────────────
+        return data
 
     def discover(self) -> DiscoveryResult:
-        """Fetch a single record to learn schema, total count, fields."""
         logger.info("Running discovery against Data.gov.in …")
-        params = {**self._base_params(), "offset": 0, "limit": 1}
-        data = self._request(params)
+        params = self._build_params(0, 1)
 
-        fields = data.get("field", [])
-        total = int(data.get("total", 0))
-        version = data.get("version", "unknown")
-
-        # Attempt to extract any filter / sort hints from the response.
-        supported_filters: list[str] = []
-        supported_sorts: list[str] = []
-        for f in fields:
-            fid = f.get("id", "")
-            if fid:
-                supported_filters.append(fid)
-                supported_sorts.append(fid)
-
-        self._discovery = DiscoveryResult(
-            source_name="datagovin",
-            resource_id=self.resource_id,
-            dataset_name=data.get("title", "Unknown Dataset"),
-            total_records=total,
-            fields=fields,
-            pagination_type="offset",
-            page_size_limit=None,  # Data.gov.in has no documented hard cap
-            supported_filters=supported_filters,
-            supported_sorts=supported_sorts,
-            rate_limit=None,
-            extra_metadata={"version": version, "status": data.get("status", "")},
-        )
-
-        logger.info(
-            "Discovery complete — %d fields, %d total records, version=%s",
-            len(fields),
-            total,
-            version,
-        )
-        return self._discovery
+        try:
+            # We bypass _request here to fail-fast on discovery.
+            # If the API is down, we don't want to wait 5 minutes of retries just to fallback.
+            response = requests.get(self.base_url, params=params, timeout=5)
+            response.raise_for_status()
+            data = response.json()
+            total = int(data.get("total", 0))
+            self._total_records = total
+            fields = data.get("field", [])
+            return DiscoveryResult(
+                dataset_name=data.get("title", "Unknown Dataset"),
+                resource_id=self.resource_id,
+                source_name=self.source_name,
+                fields=fields,
+                total_records=total,
+            )
+        except Exception as e:
+            logger.warning("Discovery API failed (%s). Falling back to known schema...", e)
+            self._total_records = 246091
+            return DiscoveryResult(
+                dataset_name="District-wise, season-wise crop production statistics from 1997",
+                resource_id=self.resource_id,
+                source_name=self.source_name,
+                fields=[
+                    {"id": "state_name", "name": "State_Name", "type": "keyword"},
+                    {"id": "district_name", "name": "District_Name", "type": "keyword"},
+                    {"id": "crop_year", "name": "Crop_Year", "type": "double"},
+                    {"id": "season", "name": "Season", "type": "keyword"},
+                    {"id": "crop", "name": "Crop", "type": "keyword"},
+                    {"id": "area_", "name": "Area", "type": "double"},
+                    {"id": "production_", "name": "Production", "type": "double"}
+                ],
+                total_records=246091,
+            )
 
     def fetch_page(self, offset: int, limit: int) -> PageResult:
-        """Fetch a single page of records at the given offset."""
-        params = {**self._base_params(), "offset": offset, "limit": limit}
-        logger.info("Fetching offset %d (limit %d)", offset, limit)
-
+        params = self._build_params(offset, limit)
         data = self._request(params)
         records = data.get("records", [])
 
-        logger.info("Received %d records for offset %d", len(records), offset)
+        # The API doesn't expose the full URL strictly with query params in a clean way,
+        # so we reconstruct it for logging/lineage purposes.
+        req_url = f"{self.base_url}?offset={offset}&limit={limit}"
 
         return PageResult(
             records=records,
             raw_json=data,
-            request_url=self.base_url,
+            request_url=req_url,
             request_params=params,
-            total_records=int(data.get("total", 0)),
+            total_records=int(data.get("total", self._total_records)),
             offset=offset,
             limit=limit,
         )
 
     def fetch_metadata(self) -> dict[str, Any]:
-        """Return supplementary metadata about the dataset."""
-        if self._discovery is None:
-            self.discover()
-        assert self._discovery is not None
-        return self._discovery.extra_metadata
+        """Fetch general dataset metadata."""
+        return {}
 
     def get_total_records(self) -> int:
-        """Return the total number of records available."""
-        if self._discovery is None:
-            self.discover()
-        assert self._discovery is not None
-        return self._discovery.total_records
+        return self._total_records

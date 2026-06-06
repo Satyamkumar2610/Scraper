@@ -13,3 +13,5 @@ alembic==1.13.1
 pyarrow==15.0.2
 
 # Hashing (stdlib hashlib is used, no extra dep needed)
+beautifulsoup4==4.12.3
+lxml==5.2.1

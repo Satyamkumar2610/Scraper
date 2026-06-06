@@ -21,7 +21,13 @@ import sys
 
 from app.config import settings
 from app.database import get_db, init_db
-from app.exporters import export_arrow, export_csv, export_json, export_parquet
+from app.exporters import (
+    export_arrow,
+    export_csv,
+    export_json,
+    export_parquet,
+    export_xlsx,
+)
 from app.logger import logger
 from app.scheduler import (
     get_status,
@@ -29,12 +35,13 @@ from app.scheduler import (
     resume_scrape,
     start_scrape,
 )
-from app.sources.datagovin import DataGovInSource
+from app.sources.base import BaseDataSource
 
 
-def _make_source() -> DataGovInSource:
-    """Instantiate the default Data.gov.in source adapter."""
-    return DataGovInSource()
+def _make_source() -> BaseDataSource:
+    """Helper to instantiate the appropriate adapter."""
+    from app.sources.desagri import DESAgriSource
+    return DESAgriSource()
 
 
 def cmd_discover(_args: argparse.Namespace) -> None:
@@ -93,6 +100,11 @@ def cmd_export_json(_args: argparse.Namespace) -> None:
     print(f"✓ Exported to {path}")
 
 
+def cmd_export_xlsx(_args: argparse.Namespace) -> None:
+    path = export_xlsx()
+    print(f"✓ Exported to {path}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the top-level argparse parser with subcommands."""
     parser = argparse.ArgumentParser(
@@ -129,6 +141,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("export-parquet", help="Export raw data to Parquet")
     sub.add_parser("export-arrow", help="Export raw data to Arrow IPC")
     sub.add_parser("export-json", help="Export raw data to JSONL")
+    sub.add_parser("export-xlsx", help="Export raw data to XLSX")
 
     return parser
 
@@ -143,6 +156,7 @@ COMMAND_MAP = {
     "export-parquet": cmd_export_parquet,
     "export-arrow": cmd_export_arrow,
     "export-json": cmd_export_json,
+    "export-xlsx": cmd_export_xlsx,
 }
 
 
