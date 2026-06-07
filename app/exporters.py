@@ -50,6 +50,39 @@ def _timestamped_name(extension: str) -> str:
     return f"crop_statistics_raw_{ts}.{extension}"
 
 
+def _reorder_and_rename_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Reorder columns to put identifiers first, and rename crop columns to put season at the end."""
+    preferred_order = [
+        "id",
+        "State",
+        "District",
+        "Year",
+        "source_record_hash",
+        "source_dataset",
+        "source_resource_id",
+        "source_system",
+        "ingested_at",
+    ]
+    first_cols = [col for col in preferred_order if col in df.columns]
+    other_cols = sorted([col for col in df.columns if col not in first_cols])
+    
+    df = df[first_cols + other_cols]
+    
+    # Rename crop columns: Crop_Season_Variable -> Crop_Variable_Season
+    import re
+    new_cols = []
+    pattern = re.compile(r"^(.*?)_(Kharif|Rabi|Summer|Autumn|Winter|Whole_Year)_(.*)$")
+    for col in df.columns:
+        match = pattern.match(col)
+        if match:
+            new_cols.append(f"{match.group(1)}_{match.group(3)}_{match.group(2)}")
+        else:
+            new_cols.append(col)
+    df.columns = new_cols
+    
+    return df
+
+
 # ─── Public export functions ─────────────────────────────────────────
 
 def export_csv(
@@ -62,6 +95,7 @@ def export_csv(
 
     sql = _build_query(since, where)
     df = pd.read_sql(text(sql), con=engine)
+    df = _reorder_and_rename_columns(df)
     df.to_csv(path, index=False)
 
     logger.info("Exported %d rows to %s", len(df), path)
@@ -78,6 +112,7 @@ def export_parquet(
 
     sql = _build_query(since, where)
     df = pd.read_sql(text(sql), con=engine)
+    df = _reorder_and_rename_columns(df)
     df.to_parquet(path, index=False, engine="pyarrow")
 
     logger.info("Exported %d rows to %s", len(df), path)
@@ -94,6 +129,7 @@ def export_arrow(
 
     sql = _build_query(since, where)
     df = pd.read_sql(text(sql), con=engine)
+    df = _reorder_and_rename_columns(df)
     df.to_feather(path)
 
     logger.info("Exported %d rows to %s", len(df), path)
@@ -110,6 +146,7 @@ def export_json(
 
     sql = _build_query(since, where)
     df = pd.read_sql(text(sql), con=engine)
+    df = _reorder_and_rename_columns(df)
     df.to_json(path, orient="records", lines=True, force_ascii=False)
 
     logger.info("Exported %d rows to %s", len(df), path)
@@ -126,6 +163,7 @@ def export_xlsx(
 
     sql = _build_query(since, where)
     df = pd.read_sql(text(sql), con=engine)
+    df = _reorder_and_rename_columns(df)
     df.to_excel(path, index=False, engine="openpyxl")
 
     logger.info("Exported %d rows to %s", len(df), path)
