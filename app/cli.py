@@ -105,6 +105,39 @@ def cmd_export_xlsx(_args: argparse.Namespace) -> None:
     print(f"✓ Exported to {path}")
 
 
+def cmd_scrape_iss(_args: argparse.Namespace) -> None:
+    from scrapers.india_state_story_scraper import IndiaStateStoryScraper
+    scraper = IndiaStateStoryScraper()
+    scraper.run()
+    print("✓ India State Story scraping complete.")
+
+def cmd_build_lineage(_args: argparse.Namespace) -> None:
+    from lineage.lineage_builder import LineageBuilder
+    builder = LineageBuilder()
+    builder.extract_events_from_raw()
+    edges_df = builder.generate_lineage_edges()
+    if edges_df is not None:
+        G = builder.build_lineage_graph(edges_df)
+        builder.check_data_quality(edges_df, G)
+    print("✓ Lineage built.")
+
+def cmd_validate_lineage(_args: argparse.Namespace) -> None:
+    from lineage.lineage_builder import LineageBuilder
+    builder = LineageBuilder()
+    builder.extract_events_from_raw()
+    edges_df = builder.generate_lineage_edges()
+    if edges_df is not None:
+        builder.validate_against_lgd(edges_df)
+    print("✓ Lineage validation complete.")
+
+def cmd_export_i_ascap(_args: argparse.Namespace) -> None:
+    from lineage.lineage_builder import LineageBuilder
+    builder = LineageBuilder()
+    builder.extract_events_from_raw()
+    builder.export_i_ascap()
+    print("✓ I-ASCAP export complete.")
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the top-level argparse parser with subcommands."""
     parser = argparse.ArgumentParser(
@@ -143,6 +176,12 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("export-json", help="Export raw data to JSONL")
     sub.add_parser("export-xlsx", help="Export raw data to XLSX")
 
+    # india state story commands
+    sub.add_parser("scrape-india-state-story", help="Scrape India State Story")
+    sub.add_parser("build-lineage", help="Build lineage edges and graph")
+    sub.add_parser("validate-lineage", help="Validate lineage against LGD")
+    sub.add_parser("export-i-ascap", help="Export district evolution master")
+
     return parser
 
 
@@ -157,6 +196,10 @@ COMMAND_MAP = {
     "export-arrow": cmd_export_arrow,
     "export-json": cmd_export_json,
     "export-xlsx": cmd_export_xlsx,
+    "scrape-india-state-story": cmd_scrape_iss,
+    "build-lineage": cmd_build_lineage,
+    "validate-lineage": cmd_validate_lineage,
+    "export-i-ascap": cmd_export_i_ascap,
 }
 
 

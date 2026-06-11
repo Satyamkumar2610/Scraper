@@ -8,6 +8,8 @@ pandas==2.2.1
 tenacity==8.2.3
 python-dotenv==1.0.1
 alembic==1.13.1
+networkx==3.2.1
+openpyxl==3.1.2
 
 # Export formats
 pyarrow==15.0.2
